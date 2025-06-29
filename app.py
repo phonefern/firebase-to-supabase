@@ -11,6 +11,7 @@ from flask import Flask, render_template_string, request, redirect, url_for, jso
 from functools import wraps
 import json
 import logging
+import schedule
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -19,23 +20,29 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 BANGKOK_TZ = pytz.timezone('Asia/Bangkok')
 
-# Firebase Initialization
-try:
-    firebase_creds_json = os.environ.get('FIREBASE_CREDS')
-    if not firebase_creds_json:
-        raise ValueError("FIREBASE_CREDS environment variable not set")
-    
-    # Handle escaped newlines if present
-    firebase_creds_json = firebase_creds_json.replace('\\n', '\n')
-    firebase_creds_dict = json.loads(firebase_creds_json)
-    
-    cred = credentials.Certificate(firebase_creds_dict)
-    firebase_admin.initialize_app(cred)
-    fs_db = firestore.client()
-    logger.info("Firebase initialized successfully")
-except Exception as e:
-    logger.error(f"Firebase initialization failed: {str(e)}")
-    raise
+def initialize_firebase():
+    try:
+        firebase_creds_json = os.environ.get('FIREBASE_CREDS')
+        if not firebase_creds_json:
+            raise ValueError("FIREBASE_CREDS environment variable not set")
+
+        # Parse the JSON with proper handling of escaped characters
+        firebase_creds_dict = json.loads(firebase_creds_json)
+        
+        # Fix newlines in private key if they were escaped
+        if '\\n' in firebase_creds_dict.get('private_key', ''):
+            firebase_creds_dict['private_key'] = firebase_creds_dict['private_key'].replace('\\n', '\n')
+        
+        cred = credentials.Certificate(firebase_creds_dict)
+        firebase_admin.initialize_app(cred)
+        print("Firebase initialized successfully")
+        return firebase_admin.firestore.client()
+    except Exception as e:
+        print(f"Firebase initialization failed: {str(e)}")
+        raise
+
+# Initialize Firebase
+fs_db = initialize_firebase()
 
 # Supabase Connection
 def get_db_connection():
