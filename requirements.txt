@@ -1,0 +1,5 @@
+Flask
+firebase-admin
+psycopg2-binary
+pytz
+gunicorn
