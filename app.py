@@ -2,7 +2,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import psycopg2
 import os
-import schedule
+
 import time
 from datetime import datetime, timedelta
 import pytz
