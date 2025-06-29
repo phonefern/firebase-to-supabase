@@ -3,3 +3,5 @@ firebase-admin
 psycopg2-binary
 pytz
 gunicorn
+schedule
+python-dotenv
