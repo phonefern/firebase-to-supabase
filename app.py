@@ -148,184 +148,183 @@ def migrate_all(full_sync=False):
         "summary_count": summary_count
     }
 
+@background_task
 def migrate_users(since=None):
-    count = 0
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Query Firebase users
-        users_ref = fs_db.collection("users")
-        if since:
-            users_ref = users_ref.where("lastUpdate", ">=", since.astimezone(pytz.UTC))
-        
-        users = users_ref.stream()
-        
-        for doc in users:
-            user_id = doc.id
-            data = doc.to_dict()
-            try:
-                # Upsert user data with all fields
-                cur.execute("""
-                    INSERT INTO users (
-                        id, age, bod, educationStatus, email, emorument, ethnicity,
-                        firstName, gender, idCardAddress, irb, isStaff, lastName,
-                        lastUpdate, liveAddress, maritalStatus, occupation, pdpa,
-                        perfixName, phoneNumber, remind, thaiId, timestamp
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s
-                    )
-                    ON CONFLICT (id) DO UPDATE SET
-                        age = EXCLUDED.age,
-                        bod = EXCLUDED.bod,
-                        educationStatus = EXCLUDED.educationStatus,
-                        email = EXCLUDED.email,
-                        emorument = EXCLUDED.emorument,
-                        ethnicity = EXCLUDED.ethnicity,
-                        firstName = EXCLUDED.firstName,
-                        gender = EXCLUDED.gender,
-                        idCardAddress = EXCLUDED.idCardAddress,
-                        irb = EXCLUDED.irb,
-                        isStaff = EXCLUDED.isStaff,
-                        lastName = EXCLUDED.lastName,
-                        lastUpdate = EXCLUDED.lastUpdate,
-                        liveAddress = EXCLUDED.liveAddress,
-                        maritalStatus = EXCLUDED.maritalStatus,
-                        occupation = EXCLUDED.occupation,
-                        pdpa = EXCLUDED.pdpa,
-                        perfixName = EXCLUDED.perfixName,
-                        phoneNumber = EXCLUDED.phoneNumber,
-                        remind = EXCLUDED.remind,
-                        thaiId = EXCLUDED.thaiId,
-                        timestamp = EXCLUDED.timestamp;
-                """, (
-                    user_id,
-                    data.get("age"),
-                    parse_ts(data.get("bod")),
-                    data.get("educationStatus"),
-                    data.get("email"),
-                    data.get("emorument"),
-                    data.get("ethnicity"),
-                    data.get("firstName"),
-                    data.get("gender"),
-                    data.get("idCardAddress"),
-                    data.get("irb"),
-                    data.get("isStaff"),
-                    data.get("lastName"),
-                    parse_ts(data.get("lastUpdate")),
-                    data.get("liveAddress"),
-                    data.get("maritalStatus"),
-                    data.get("occupation"),
-                    data.get("pdpa"),
-                    data.get("perfixName"),
-                    data.get("phoneNumber"),
-                    parse_ts(data.get("remind")),
-                    data.get("thaiId"),
-                    parse_ts(data.get("timestamp")),
-                ))
-                count += 1
-                if count % 100 == 0:
-                    logger.info(f"Processed {count} users...")
-            except Exception as e:
-                logger.error(f"Failed user {user_id}: {str(e)}")
-        
-        conn.commit()
-        logger.info(f"Successfully migrated {count} users")
-        return count
-        
-    except Exception as e:
-        logger.error(f"User migration failed: {str(e)}")
-        if conn:
-            conn.rollback()
-        raise
-    finally:
-        if conn:
-            cur.close()
-            conn.close()
+    print(f"\nStarting user migration from Firestore → Supabase (since: {since})")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    users_ref = db.collection("users")
+    users_query = users_ref
+    
+    # Only get users updated since last migration if specified
+    if since:
+        # Convert Thai time to UTC for Firestore query
+        since_utc = since.astimezone(pytz.UTC)
+        users_query = users_ref.where("lastUpdate", ">=", since_utc)
+    
+    users = users_query.stream()
+    migrated_count = 0
+    
+    for doc in users:
+        data = doc.to_dict()
+        user_id = doc.id
 
+        try:
+            cursor.execute("""
+                INSERT INTO users (
+                    id, age, bod, educationStatus, email, emorument, ethnicity,
+                    firstName, gender, idCardAddress, irb, isStaff, lastName,
+                    lastUpdate, liveAddress, maritalStatus, occupation, pdpa,
+                    perfixName, phoneNumber, remind, thaiId, timestamp
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    age = EXCLUDED.age,
+                    bod = EXCLUDED.bod,
+                    educationStatus = EXCLUDED.educationStatus,
+                    email = EXCLUDED.email,
+                    emorument = EXCLUDED.emorument,
+                    ethnicity = EXCLUDED.ethnicity,
+                    firstName = EXCLUDED.firstName,
+                    gender = EXCLUDED.gender,
+                    idCardAddress = EXCLUDED.idCardAddress,
+                    irb = EXCLUDED.irb,
+                    isStaff = EXCLUDED.isStaff,
+                    lastName = EXCLUDED.lastName,
+                    lastUpdate = EXCLUDED.lastUpdate,
+                    liveAddress = EXCLUDED.liveAddress,
+                    maritalStatus = EXCLUDED.maritalStatus,
+                    occupation = EXCLUDED.occupation,
+                    pdpa = EXCLUDED.pdpa,
+                    perfixName = EXCLUDED.perfixName,
+                    phoneNumber = EXCLUDED.phoneNumber,
+                    remind = EXCLUDED.remind,
+                    thaiId = EXCLUDED.thaiId,
+                    timestamp = EXCLUDED.timestamp;
+            """, (
+                user_id,
+                data.get("age"),
+                parse_ts(data.get("bod")),
+                data.get("educationStatus"),
+                data.get("email"),
+                data.get("emorument"),
+                data.get("ethnicity"),
+                data.get("firstName"),
+                data.get("gender"),
+                data.get("idCardAddress"),
+                data.get("irb"),
+                data.get("isStaff"),
+                data.get("lastName"),
+                parse_ts(data.get("lastUpdate")),
+                data.get("liveAddress"),
+                data.get("maritalStatus"),
+                data.get("occupation"),
+                data.get("pdpa"),
+                data.get("perfixName"),
+                data.get("phoneNumber"),
+                parse_ts(data.get("remind")),
+                data.get("thaiId"),
+                parse_ts(data.get("timestamp")),
+            ))
+            migrated_count += 1
+        except Exception as e:
+            print(f"❌ Error updating user {user_id}: {e}")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print(f"✅ User migration complete. {migrated_count} users processed.")
+    return migrated_count
+
+@background_task
 def migrate_summaries(since=None):
-    count = 0
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+    print(f"\nProcessing user summaries (since: {since})")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    users = db.collection("users").stream()
+    processed_count = 0
+
+    for user_doc in users:
+        user_id = user_doc.id
+        records_ref = db.collection("users").document(user_id).collection("records")
         
-        # Get all users from Firebase
-        users = fs_db.collection("users").stream()
-        
-        for user_doc in users:
-            user_id = user_doc.id
-            records_ref = fs_db.collection("users").document(user_id).collection("records")
+        # Only get records updated since last migration if specified
+        if since:
+            since_utc = since.astimezone(pytz.UTC)
+            records_query = records_ref.where("lastUpdate", ">=", since_utc)
+        else:
+            records_query = records_ref
             
-            if since:
-                records_ref = records_ref.where("lastUpdate", ">=", since.astimezone(pytz.UTC))
-            
-            records = list(records_ref.stream())
-            
-            if not records:
-                continue
-            
-            # Organize records by recorder
-            recs = {}
-            for rec in records:
-                data = rec.to_dict()
-                recorder = data.get("recorder") or "unknown"
-                if recorder not in recs:
-                    recs[recorder] = []
-                recs[recorder].append(data)
-            
-            # Process each recorder's records
-            for recorder, items in recs.items():
-                try:
-                    # Get latest prediction risk
-                    latest = max(items, key=lambda x: parse_ts(x.get("lastUpdate")) or datetime.min)
-                    prediction = latest.get("prediction", {})
-                    risk = prediction.get("risk") if isinstance(prediction, dict) else None
-                    
-                    # Count fields with data
-                    counts = {f: 0 for f in FIELDS_TO_COUNT}
-                    for item in items:
-                        for f in FIELDS_TO_COUNT:
-                            if item.get(f) is not None:
-                                counts[f] += 1
-                    
-                    # Upsert summary
-                    cur.execute(f"""
-                        INSERT INTO user_record_summary (
-                            user_id, recorder, prediction_risk, record_count, {','.join(FIELDS_TO_COUNT)}
-                        ) VALUES (
-                            %s, %s, %s, %s, {','.join(['%s'] * len(FIELDS_TO_COUNT))}
-                        )
-                        ON CONFLICT (user_id, recorder) DO UPDATE SET
-                            prediction_risk = EXCLUDED.prediction_risk,
-                            record_count = EXCLUDED.record_count,
-                            {','.join([f"{f} = EXCLUDED.{f}" for f in FIELDS_TO_COUNT])};
-                    """, [user_id, recorder, risk, len(items)] + [counts[f] for f in FIELDS_TO_COUNT])
-                    
-                    count += 1
-                    if count % 50 == 0:
-                        logger.info(f"Processed {count} summaries...")
-                
-                except Exception as e:
-                    logger.error(f"Failed summary for {user_id}/{recorder}: {str(e)}")
-        
-        conn.commit()
-        logger.info(f"Successfully migrated {count} summaries")
-        return count
-        
-    except Exception as e:
-        logger.error(f"Summary migration failed: {str(e)}")
-        if conn:
-            conn.rollback()
-        raise
-    finally:
-        if conn:
-            cur.close()
-            conn.close()
+        records = list(records_query.stream())
+
+        # Group by recorder
+        grouped = {}
+        for rec in records:
+            data = rec.to_dict()
+            recorder = data.get("recorder") or "unknown"
+            last_update = parse_ts(data.get("lastUpdate")) or datetime.min
+
+            if recorder not in grouped:
+                grouped[recorder] = []
+            grouped[recorder].append((last_update, rec.id, data))
+
+        for recorder, rec_list in grouped.items():
+            rec_list.sort(key=lambda x: x[0], reverse=True)
+            latest_update, latest_rec_id, latest_data = rec_list[0]
+            prediction_risk = None
+            version = latest_data.get("version")
+
+            prediction = latest_data.get("prediction")
+            if isinstance(prediction, dict):
+                risk_val = prediction.get("risk")
+                if isinstance(risk_val, bool):
+                    prediction_risk = risk_val
+
+            counts = {field: 0 for field in FIELDS_TO_COUNT}
+            for _, _, data in rec_list:
+                for field in FIELDS_TO_COUNT:
+                    if data.get(field) is not None:
+                        counts[field] += 1
+
+            try:
+                cursor.execute(f"""
+                    INSERT INTO user_record_summary (
+                        user_id, recorder, record_id, version, last_update,
+                        prediction_risk, record_count, {', '.join(FIELDS_TO_COUNT)}
+                    ) VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s, {', '.join(['%s'] * len(FIELDS_TO_COUNT))}
+                    )
+                    ON CONFLICT (user_id, recorder) DO UPDATE SET
+                        record_id = EXCLUDED.record_id,
+                        version = EXCLUDED.version,
+                        last_update = EXCLUDED.last_update,
+                        prediction_risk = EXCLUDED.prediction_risk,
+                        record_count = EXCLUDED.record_count,
+                        {', '.join([f"{f} = EXCLUDED.{f}" for f in FIELDS_TO_COUNT])};
+                """, [
+                    user_id,
+                    recorder,
+                    latest_rec_id,
+                    version,
+                    latest_update,
+                    prediction_risk,
+                    len(rec_list)
+                ] + [counts[f] for f in FIELDS_TO_COUNT])
+                processed_count += 1
+            except Exception as e:
+                print(f"❌ Error for user {user_id}, recorder {recorder}: {e}")
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+    print(f"✅ User summaries complete. {processed_count} records processed.")
+    return processed_count
 
 @app.route("/")
 def index():
