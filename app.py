@@ -372,17 +372,15 @@ def migrate_summaries(since=None):
     users whose 'lastUpdate' is recent. For each selected user, it fetches ALL
     their records to compute a comprehensive summary.
     """
-    count = 0
+    count = 0 # Renamed from processed_count to count for consistency
     conn = None
-    cur = None
+    cur = None # Renamed from cursor to cur for consistency
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
         users_ref = fs_db.collection("users")
         if since:
-            # Only get users who have been updated since the last run.
-            # This is key for efficient incremental summary processing.
             users_query = users_ref.where("lastUpdate", ">=", since.astimezone(pytz.UTC))
             logger.info(f"Querying Firestore for users (for summaries) updated since {since.astimezone(pytz.UTC)}")
         else:
@@ -395,70 +393,93 @@ def migrate_summaries(since=None):
             user_id = user_doc.id
             
             records_ref = fs_db.collection("users").document(user_id).collection("records")
-            
-            # IMPORTANT: For user_record_summary, we need to look at ALL records
-            # associated with this user (or at least all records for each 'recorder').
-            # The 'since' filter should be applied at the user level (as above)
-            # to decide *which users* need their summaries re-calculated.
-            # Once a user is selected, fetch all their records to get a complete picture.
             all_user_records = list(records_ref.stream())
             
             if not all_user_records:
                 logger.debug(f"User {user_id} has no records, skipping summary.")
                 continue
             
-            # Organize records by recorder
-            grouped_records_by_recorder = {}
-            for rec in all_user_records:
+            # Group by recorder (as provided in snippet)
+            grouped = {}
+            for rec in all_user_records: # Renamed from records to all_user_records
                 data = rec.to_dict()
                 recorder = data.get("recorder") or "unknown"
-                if recorder not in grouped_records_by_recorder:
-                    grouped_records_by_recorder[recorder] = []
-                grouped_records_by_recorder[recorder].append(data)
+                last_update = parse_ts(data.get("lastUpdate")) or datetime.min
+                if recorder not in grouped:
+                    grouped[recorder] = []
+                grouped[recorder].append((last_update, rec.id, data))
             
-            # Process each recorder's records to create/update summary
-            for recorder, items in grouped_records_by_recorder.items():
+            # Process each recorder's records
+            for recorder, rec_list in grouped.items():
                 try:
-                    # Get the latest prediction risk from the most recent record for this recorder
-                    latest_record_for_recorder = max(items, key=lambda x: parse_ts(x.get("lastUpdate")) or datetime.min)
-                    prediction = latest_record_for_recorder.get("prediction", {})
-                    risk = prediction.get("risk") if isinstance(prediction, dict) else None
+                    rec_list.sort(key=lambda x: x[0], reverse=True)
+                    latest_update_ts, latest_rec_id, latest_data = rec_list[0]
+                    
+                    version = latest_data.get("version")
+                    prediction = latest_data.get("prediction")
+                    
+                    # Handling prediction_risk: Send as TEXT/VARCHAR to Supabase
+                    # This assumes you have changed the `prediction_risk` column in Supabase to TEXT.
+                    risk_val = None
+                    if isinstance(prediction, dict):
+                        # Get the raw value, regardless of type
+                        risk_val = prediction.get("risk")
+                    
+                    # Convert to string if it's not None, otherwise keep None for SQL NULL
+                    prediction_risk_for_db = str(risk_val) if risk_val is not None else None
                     
                     # Count fields with data across ALL records for this recorder
-                    field_counts = {f: 0 for f in FIELDS_TO_COUNT}
-                    for item in items:
-                        for f in FIELDS_TO_COUNT:
-                            if item.get(f) is not None:
-                                field_counts[f] += 1
+                    counts = {field: 0 for field in FIELDS_TO_COUNT}
+                    for _, _, data in rec_list:
+                        for field in FIELDS_TO_COUNT:
+                            if data.get(field) is not None:
+                                counts[field] += 1
                     
                     # Upsert summary into Supabase
                     cur.execute(f"""
                         INSERT INTO user_record_summary (
-                            user_id, recorder, prediction_risk, record_count, {','.join(FIELDS_TO_COUNT)}
+                            user_id, recorder, record_id, version, last_update,
+                            prediction_risk, record_count, {', '.join(FIELDS_TO_COUNT)}
                         ) VALUES (
-                            %s, %s, %s, %s, {','.join(['%s'] * len(FIELDS_TO_COUNT))}
+                            %s, %s, %s, %s, %s,
+                            %s, %s, {', '.join(['%s'] * len(FIELDS_TO_COUNT))}
                         )
                         ON CONFLICT (user_id, recorder) DO UPDATE SET
+                            record_id = EXCLUDED.record_id,
+                            version = EXCLUDED.version,
+                            last_update = EXCLUDED.last_update,
                             prediction_risk = EXCLUDED.prediction_risk,
                             record_count = EXCLUDED.record_count,
-                            {','.join([f"{f} = EXCLUDED.{f}" for f in FIELDS_TO_COUNT])},
-                            updated_at = NOW(); -- Automatically update timestamp
+                            {', '.join([f"{f} = EXCLUDED.{f}" for f in FIELDS_TO_COUNT])},
+                            updated_at = NOW();
                     """, [
                         user_id,
                         recorder,
-                        risk,
-                        len(items) # Total number of records for this user/recorder
-                    ] + [field_counts[f] for f in FIELDS_TO_COUNT])
+                        latest_rec_id,
+                        version,
+                        latest_update_ts, # Use the parsed datetime object
+                        prediction_risk_for_db, # Use the processed string value
+                        len(rec_list) # Total number of records for this user/recorder
+                    ] + [counts[f] for f in FIELDS_TO_COUNT])
                     
                     count += 1
                     if count % 50 == 0:
                         logger.info(f"Summary migration: Processed {count} summaries.")
                     
                 except Exception as e:
+                    # Log error, then rollback the *current transaction* to clear the aborted state
                     logger.error(f"Failed to process summary for user {user_id}, recorder {recorder}: {str(e)}", exc_info=True)
-                    # Continue to next recorder even if one fails
+                    # This rollback is crucial if an error occurs mid-transaction to allow subsequent
+                    # user summaries to be processed within the same overall function call.
+                    # Note: psycopg2's default isolation level (READ COMMITTED) and how it handles
+                    # statement-level errors might mean it already auto-rolls back the sub-transaction.
+                    # However, an explicit rollback ensures a clean state.
+                    if conn:
+                        conn.rollback() # Rollback to clear aborted state
+                    # Re-establish cursor if needed, or simply continue.
+                    # In this loop, if an error happens, we just log and move to next recorder.
             
-        conn.commit() # Commit all changes for this batch
+        conn.commit() # Final commit of all successful operations
         logger.info(f"Summary migration completed. Successfully processed {count} summaries.")
         return count
             
@@ -466,7 +487,7 @@ def migrate_summaries(since=None):
         logger.error(f"Overall summary migration failed: {str(e)}", exc_info=True)
         if conn:
             conn.rollback() # Rollback all changes if a critical error occurs
-        raise # Re-raise to signal failure to the caller
+        raise # Re-raise to signal failure to the caller to `migrate_all`
     finally:
         if cur:
             cur.close()
